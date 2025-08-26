@@ -56,10 +56,6 @@ final_output_dir = "video_output"
 os.makedirs(output_left_dir, exist_ok=True)
 os.makedirs(output_right_dir, exist_ok=True)
 
-# Semaphore to limit concurrent ffmpeg processes
-transform_semaphore = threading.Semaphore(MAX_CONCURRENT_DEC_PROCESSES)
-process_semaphore = threading.Semaphore(MAX_CONCURRENT_ENC_PROCESSES)
-
 lock_transformed_left = threading.Lock()
 lock_transformed_right = threading.Lock()
 
@@ -70,57 +66,53 @@ def transform_video(input_file, lock, side="left"):
     crop = 'crop=iw/2:ih:0:0' if side == 'left' else 'crop=iw/2:ih:iw/2:0'
     output_dir = output_left_dir if side == 'left' else output_right_dir
     output_file = os.path.join(output_dir, f"{os.path.basename(input_file)}")
-    # Acquire semaphore before starting the process
-    with transform_semaphore:
-        try:
-            # convert original video to an intra frame decoding video so that expensive decoding happens only once per
-            # each input video
-            cmd = [
-                'ffmpeg',
-                '-i', input_file,
-                '-vf', crop,  # Crop left or right
-                '-c:v', 'png', '-pix_fmt', 'rgb24', '-y',
-                output_file,
-            ]
-            print(f"Starting video transformation {input_file}")
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            time.sleep(INTER_DEC_TIME)
-            if result.returncode != 0:
-                print(f"Error video transformation {input_file}: {result.stderr.decode()}")
-            else:
-                print(f"Finished video transformation {input_file}")
-                with lock:
-                    if side == "left":
-                        transformed_left.add(output_file)
-                    else:
-                        transformed_right.add(output_file)
-        except Exception as e:
-            print(f"Exception video transformation {input_file}: {e}")
+    try:
+        # convert original video to an intra frame decoding video so that expensive decoding happens only once per
+        # each input video
+        cmd = [
+            'ffmpeg',
+            '-i', input_file,
+            '-vf', crop,  # Crop left or right
+            '-c:v', 'png', '-pix_fmt', 'rgb24', '-y',
+            output_file,
+        ]
+        print(f"Starting video transformation {input_file}")
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(INTER_DEC_TIME)
+        if result.returncode != 0:
+            print(f"Error video transformation {input_file}: {result.stderr.decode()}")
+        else:
+            print(f"Finished video transformation {input_file}")
+            with lock:
+                if side == "left":
+                    transformed_left.add(output_file)
+                else:
+                    transformed_right.add(output_file)
+    except Exception as e:
+        print(f"Exception video transformation {input_file}: {e}")
 
 
 def join_videos(input_file_left, input_file_right):
     output_basename = f"{os.path.basename(input_file_left)[:-4]}" + f"_{os.path.basename(input_file_right)}"
     output_file = os.path.join(final_output_dir, output_basename)
-    # Acquire semaphore before starting the process
-    with process_semaphore:
-        try:
-            # concat frames from 2 videos into one frame in resulting video
-            cmd = [
-                'ffmpeg',
-                '-i', input_file_left,
-                '-i', input_file_right,
-                '-filter_complex', 'hstack=inputs=2', '-y',
-                output_file,
-            ]
-            print(f"Writing to {output_file}")
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            time.sleep(INTER_ENC_TIME)
-            if result.returncode != 0:
-                print(f"Error writing to {output_file}: {result.stderr.decode()}")
-            else:
-                print(f"Finished writing to {output_file}")
-        except Exception as e:
-            print(f"Exception writing to {output_file}: {e}")
+    try:
+        # concat frames from 2 videos into one frame in resulting video
+        cmd = [
+            'ffmpeg',
+            '-i', input_file_left,
+            '-i', input_file_right,
+            '-filter_complex', 'hstack=inputs=2', '-y',
+            output_file,
+        ]
+        print(f"Writing to {output_file}")
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(INTER_ENC_TIME)
+        if result.returncode != 0:
+            print(f"Error writing to {output_file}: {result.stderr.decode()}")
+        else:
+            print(f"Finished writing to {output_file}")
+    except Exception as e:
+        print(f"Exception writing to {output_file}: {e}")
 
 
 """
