@@ -4,7 +4,7 @@ import os
 import time
 import glob
 from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
-from itertools import combinations, product
+from itertools import product
 
 """
 Since it's a Cartesian product between 2 input video sets, there are many readings/decodings per video and the goal is to
@@ -25,32 +25,29 @@ video joining can start.
 What is more performant and/or beneficial could be a subject of particular technical goals and can be measured by manual
 testing, depending of available hw and others.
 For example, if we want to generate video combinations as soon as possible for fast publishing or similar then 
-overlapping approach could be more beneficial.
+overlapping approach could be more beneficial. Another example is when the first video processing pipeline runs on
+the first host (video transform producer), intermediate videos are written to the share folder, where video combiner 
+(consumer on another host) reads them from, combines them and write to the final destination.
+In this improvised producer-consumer pipeline, consumer (video-combiner-encoder) doesn't have to wait for all videos to 
+be transformed first before start consume/combine them.
 """
 
-NUMBER_OF_ONE_SIDE_VIDEOS = 1000
+# Max number of concurrent ffmpeg processes
+MAX_CONCURRENT_DEC_PROCESSES = 30
+MAX_CONCURRENT_ENC_PROCESSES = 30
+MAX_ENC_TIME = 10800  # e.g. 3h
 
-video_idxs = list(range(NUMBER_OF_ONE_SIDE_VIDEOS))
-remaining_video_combinations = set(combinations(video_idxs, 2))
-transformed_left = set()
-transformed_right = set()
-
-# List of input video files
-# left_videos = [f"left_dir/video_{i}.mkv" for i in range(NUMBER_OF_ONE_SIDE_VIDEOS)]  # Example: 1000 files
-# right_videos = [f"right_dir/video_{i}.mkv" for i in range(NUMBER_OF_ONE_SIDE_VIDEOS)]
+# ad-hoc trivial approach to control processor utilization of 2 different video processing pipelines
+# for example, tuned values obtained after few manual tries to keep cpu utilization <70%
+INTER_DEC_TIME = 0.5  # decoding thread pause time after finishing its decoding and writing to intermediate files
+INTER_ENC_TIME = 0.5  # encoding thread pause time after finishing its encoding and writing to resulting video combination
 
 left_videos = glob.glob("left_dir/video*.mp4")
 right_videos = glob.glob("right_dir/video*.mp4")
 
-# Max number of concurrent ffmpeg processes
-MAX_CONCURRENT_DEC_PROCESSES = 30
-MAX_CONCURRENT_ENC_PROCESSES = 10
-MAX_ENC_TIME = 10800 # e.g. 3h
-
-# ad-hoc trivial approach to control processor utilization of 2 different video processing pipelines
-# for example, tuned values obtained after few manual tries to keep cpu utilization <70%
-INTER_DEC_TIME = 0.5 # decoding thread pause time after finishing its decoding and writing to intermediate files
-INTER_ENC_TIME = 0.5 # encoding thread pause time after finishing its encoding and writing to resulting video combination
+transformed_left = set()
+transformed_right = set()
+all_video_combinations = set()
 
 # Directory for output files
 output_left_dir = "transformed_left_videos"
@@ -66,11 +63,12 @@ process_semaphore = threading.Semaphore(MAX_CONCURRENT_ENC_PROCESSES)
 lock_transformed_left = threading.Lock()
 lock_transformed_right = threading.Lock()
 
+
 def transform_video(input_file, lock, side="left"):
     global transformed_left
     global transformed_right
-    crop = 'crop=iw/2:ih:0:0' if side=='left' else 'crop=iw/2:ih:iw/2:0'
-    output_dir = output_left_dir if side=='left' else output_right_dir
+    crop = 'crop=iw/2:ih:0:0' if side == 'left' else 'crop=iw/2:ih:iw/2:0'
+    output_dir = output_left_dir if side == 'left' else output_right_dir
     output_file = os.path.join(output_dir, f"{os.path.basename(input_file)}")
     # Acquire semaphore before starting the process
     with transform_semaphore:
@@ -99,8 +97,9 @@ def transform_video(input_file, lock, side="left"):
         except Exception as e:
             print(f"Exception video transformation {input_file}: {e}")
 
+
 def join_videos(input_file_left, input_file_right):
-    output_basename = f"{os.path.basename(input_file_left)[:-4]}" + f"_{os.path.basename(input_file_left)}"
+    output_basename = f"{os.path.basename(input_file_left)[:-4]}" + f"_{os.path.basename(input_file_right)}"
     output_file = os.path.join(final_output_dir, output_basename)
     # Acquire semaphore before starting the process
     with process_semaphore:
@@ -113,7 +112,7 @@ def join_videos(input_file_left, input_file_right):
                 '-filter_complex', 'hstack=inputs=2', '-y',
                 output_file,
             ]
-            print(f"Starting writing to {output_file}")
+            print(f"Writing to {output_file}")
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             time.sleep(INTER_ENC_TIME)
             if result.returncode != 0:
@@ -122,6 +121,7 @@ def join_videos(input_file_left, input_file_right):
                 print(f"Finished writing to {output_file}")
         except Exception as e:
             print(f"Exception writing to {output_file}: {e}")
+
 
 """
 Using ThreadPoolExecutor to schedule video transformation tasks
@@ -138,8 +138,9 @@ with ThreadPoolExecutor(max_workers=int(MAX_CONCURRENT_DEC_PROCESSES / 2)) as ex
         futures_right = [executor.submit(transform_video, vf, lock_transformed_right, "right") for vf in right_videos]
 
         start_enc_time = time.time()
-
-        while len(remaining_video_combinations) or time.time() - start_enc_time > MAX_ENC_TIME:
+        # merge left and right videos and make all video combinations
+        total_outputs_number = len(left_videos) * len(right_videos)
+        while len(all_video_combinations) < total_outputs_number or time.time() - start_enc_time > MAX_ENC_TIME:
             # lock transformed_left and transformed_right to create all available combination at a given moment if we want to
             # start creating of final video output combinations from intermediate files before all these files are created by
             # overlapping video transformation and video combination tasks. However, the benefit of this approach is questionable,
@@ -147,9 +148,9 @@ with ThreadPoolExecutor(max_workers=int(MAX_CONCURRENT_DEC_PROCESSES / 2)) as ex
             with lock_transformed_left:
                 with lock_transformed_right:
                     prepared_combinations = set(product(transformed_left, transformed_right))
+                    print(prepared_combinations)
             with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_ENC_PROCESSES) as executor:
                 futures = [executor.submit(join_videos, vt[0], vt[1]) for vt in prepared_combinations]
                 done, not_done = wait(futures, return_when=ALL_COMPLETED)
-            remaining_video_combinations = remaining_video_combinations - prepared_combinations
-            prepared_combinations = set()
-
+                all_video_combinations = all_video_combinations | prepared_combinations
+                prepared_combinations.clear()
