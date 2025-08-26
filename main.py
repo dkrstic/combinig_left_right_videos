@@ -30,6 +30,8 @@ the first host (video transform producer), intermediate videos are written to th
 (consumer on another host) reads them from, combines them and write to the final destination.
 In this improvised producer-consumer pipeline, consumer (video-combiner-encoder) doesn't have to wait for all videos to 
 be transformed first before start consume/combine them.
+But if we still want for some reason to start the second (combiner) pipeline only after the first pipeline (decoder)
+completely finishes this can be simply done by adjusting the indentations for ThreadPoolExecutor in this solution. 
 """
 
 # Max number of concurrent ffmpeg processes

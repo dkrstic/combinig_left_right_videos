@@ -1,0 +1,11 @@
+### creating test set of short videos (chunks) by spliting one longer video
+ffmpeg -i input.mp4 -c copy -map 0 -f segment -segment_time <segment_duration> -reset_timestamps 1 -segment_format_options movflags=+faststart video_%02d.mp4
+
+### test crop left/right and write to intermediate files             
+ffmpeg -i left_dir/video_01.mp4 -vf crop=iw/2:ih:0:0 -c:v png -pix_fmt rgb24 -y transformed_left_videos/video_001.mp4
+
+ffmpeg -i right_dir/video_01.mp4 -vf crop=iw/2:ih:iw/2:0 -c:v png -pix_fmt rgb24 -y transformed_right_videos/video_001.mp4
+
+### horizontaly merge frames from input files
+ffmpeg -i transformed_left_videos/video_001.mp4 -i transformed_right_videos/video_001.mp4 -filter_complex "hstack=inputs=2" -y video_output/video_001_001.mp4
+
