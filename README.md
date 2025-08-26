@@ -1,3 +1,6 @@
+The goal is to combine 2 equal video sets (for left and right side) and for each combination of videos from different sets is needed 
+to get an output video with frames that are horizontaly merged frames of one left and one right side video from the corresponding left/right video set. 
+For example, if left and right video sets contain 100 videos each, 10.000 video combinations will be generated in total.
 Since it's a Cartesian product between 2 input video sets, there are many readings/decodings per video and the goal is to
 reduce the decoding costs by creating intermediate files with low decoding footprint. However, this increases the storage 
 usage. The assumption here is that processing power and video pipeline performance is of higher priority.
